@@ -2,13 +2,13 @@ const { DistributionAPI } = require('helios-core/common')
 
 const ConfigManager = require('./configmanager')
 
-const BASE_URL = "https://novaworld-mc.fr/launcher/index.json";
+const BASE_URL = "https://github.com/jonasbeneteau-maker/launcher-NW-mods/blob/main/manifest.json";
 
 const api = new DistributionAPI(
     ConfigManager.getLauncherDirectory(),
     null, // Injected forcefully by the preloader.
     null, // Injected forcefully by the preloader.
-    exports.REMOTE_DISTRO_URL,
+    BASE_URL,
     false
 )
 
