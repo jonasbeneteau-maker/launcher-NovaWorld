@@ -2,7 +2,7 @@ const { DistributionAPI } = require('helios-core/common')
 
 const ConfigManager = require('./configmanager')
 
-const BASE_URL = "https://github.com/jonasbeneteau-maker/launcher-NW-mods/blob/main/manifest.json";
+const BASE_URL = "https://jonasbeneteau-maker.github.io/launcher-NW-mods/distribution.json";
 
 const api = new DistributionAPI(
     ConfigManager.getLauncherDirectory(),
