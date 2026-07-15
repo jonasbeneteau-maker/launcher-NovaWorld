@@ -1,8 +1,6 @@
-appId: 'helioslauncher'
-productName: 'Helios Launcher'
+appId: 'NovaWorld-Launcher'
+productName: 'NovaWorld Launcher'
 artifactName: '${productName}-setup-${version}.${ext}'
-
-copyright: 'Copyright © 2018-2026 Daniel Scalzi'
 
 asar: true
 compression: 'maximum'
