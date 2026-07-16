@@ -8,8 +8,8 @@
  * 
  * @module authmanager
  */
-// Requirements
 const ConfigManager          = require('./configmanager')
+const axios                  = require('axios')
 const { LoggerUtil }         = require('helios-core')
 const { RestResponseStatus } = require('helios-core/common')
 const { MojangRestAPI, MojangErrorCode } = require('helios-core/mojang')
@@ -131,9 +131,9 @@ function mojangErrorDisplayable(errorCode) {
 // Functions
 
 /**
- * Add a Mojang account. This will authenticate the given credentials with Mojang's
- * authserver. The resultant data will be stored as an auth account in the
- * configuration database.
+ * Add a Mojang account. This will authenticate the given credentials against the
+ * NovaWorld Azuriom API. The resultant data will be stored as an auth account in
+ * the configuration database.
  * 
  * @param {string} username The account username (email if migrated).
  * @param {string} password The account password.
@@ -141,29 +141,63 @@ function mojangErrorDisplayable(errorCode) {
  */
 exports.addMojangAccount = async function(username, password) {
     try {
-        const response = await MojangRestAPI.authenticate(username, password, ConfigManager.getClientToken())
-        console.log(response)
-        if(response.responseStatus === RestResponseStatus.SUCCESS) {
-
-            const session = response.data
-            if(session.selectedProfile != null){
-                const ret = ConfigManager.addMojangAuthAccount(session.selectedProfile.id, session.accessToken, username, session.selectedProfile.name)
-                if(ConfigManager.getClientToken() == null){
-                    ConfigManager.setClientToken(session.clientToken)
-                }
-                ConfigManager.save()
-                return ret
-            } else {
-                return Promise.reject(mojangErrorDisplayable(MojangErrorCode.ERROR_NOT_PAID))
+        // Envoi des identifiants à l'API Azuriom de NovaWorld
+        const response = await axios.post('https://novaworld-mc.fr/api/auth/authenticate', {
+            email: username,
+            password: password
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
             }
+        });
 
-        } else {
-            return Promise.reject(mojangErrorDisplayable(response.mojangErrorCode))
+        const userData = response.data;
+
+        // Si l'utilisateur est banni du site
+        if (userData.banned) {
+            throw {
+                title: "Compte suspendu",
+                desc: "Votre compte a été banni de NovaWorld."
+            };
+        }
+
+        // Enregistrement des données dans le gestionnaire de config d'Helios
+        const ret = ConfigManager.addMojangAuthAccount(
+            userData.uuid,
+            userData.access_token,
+            username,
+            userData.username
+        );
+
+        // Sauvegarde de la session locale
+        if(ConfigManager.getClientToken() == null){
+            ConfigManager.setClientToken(userData.access_token);
+        }
+        ConfigManager.save();
+
+        return ret;
+
+    } catch (err) {
+        log.error(err);
+        
+        // On intercepte les messages d'erreur renvoyés par Azuriom (ex: mauvais mot de passe)
+        if (err.response && err.response.data && err.response.data.message) {
+            throw {
+                title: "Échec de la connexion",
+                desc: err.response.data.message
+            };
         }
         
-    } catch (err){
-        log.error(err)
-        return Promise.reject(mojangErrorDisplayable(MojangErrorCode.UNKNOWN))
+        // Si c'est notre propre rejet (ex: banni)
+        if (err.title) {
+            throw err;
+        }
+        
+        throw {
+            title: "Serveur injoignable",
+            desc: "Impossible de contacter le site NovaWorld. Vérifiez votre connexion internet."
+        };
     }
 }
 
@@ -182,13 +216,12 @@ const AUTH_MODE = { FULL: 0, MS_REFRESH: 1, MC_REFRESH: 2 }
  */
 async function fullMicrosoftAuthFlow(entryCode, authMode) {
     try {
-
         let accessTokenRaw
         let accessToken
         if(authMode !== AUTH_MODE.MC_REFRESH) {
             const accessTokenResponse = await MicrosoftAuth.getAccessToken(entryCode, authMode === AUTH_MODE.MS_REFRESH, AZURE_CLIENT_ID)
             if(accessTokenResponse.responseStatus === RestResponseStatus.ERROR) {
-                return Promise.reject(microsoftErrorDisplayable(accessTokenResponse.microsoftErrorCode))
+                throw microsoftErrorDisplayable(accessTokenResponse.microsoftErrorCode)
             }
             accessToken = accessTokenResponse.data
             accessTokenRaw = accessToken.access_token
@@ -198,19 +231,19 @@ async function fullMicrosoftAuthFlow(entryCode, authMode) {
         
         const xblResponse = await MicrosoftAuth.getXBLToken(accessTokenRaw)
         if(xblResponse.responseStatus === RestResponseStatus.ERROR) {
-            return Promise.reject(microsoftErrorDisplayable(xblResponse.microsoftErrorCode))
+            throw microsoftErrorDisplayable(xblResponse.microsoftErrorCode)
         }
         const xstsResonse = await MicrosoftAuth.getXSTSToken(xblResponse.data)
         if(xstsResonse.responseStatus === RestResponseStatus.ERROR) {
-            return Promise.reject(microsoftErrorDisplayable(xstsResonse.microsoftErrorCode))
+            throw microsoftErrorDisplayable(xstsResonse.microsoftErrorCode)
         }
         const mcTokenResponse = await MicrosoftAuth.getMCAccessToken(xstsResonse.data)
         if(mcTokenResponse.responseStatus === RestResponseStatus.ERROR) {
-            return Promise.reject(microsoftErrorDisplayable(mcTokenResponse.microsoftErrorCode))
+            throw microsoftErrorDisplayable(mcTokenResponse.microsoftErrorCode)
         }
         const mcProfileResponse = await MicrosoftAuth.getMCProfile(mcTokenResponse.data.access_token)
         if(mcProfileResponse.responseStatus === RestResponseStatus.ERROR) {
-            return Promise.reject(microsoftErrorDisplayable(mcProfileResponse.microsoftErrorCode))
+            throw microsoftErrorDisplayable(mcProfileResponse.microsoftErrorCode)
         }
         return {
             accessToken,
@@ -222,7 +255,9 @@ async function fullMicrosoftAuthFlow(entryCode, authMode) {
         }
     } catch(err) {
         log.error(err)
-        return Promise.reject(microsoftErrorDisplayable(MicrosoftErrorCode.UNKNOWN))
+        // Si l'erreur est déjà structurée par nos soins, on la propage
+        if(err.title) throw err;
+        throw microsoftErrorDisplayable(MicrosoftErrorCode.UNKNOWN)
     }
 }
 
@@ -232,7 +267,7 @@ async function fullMicrosoftAuthFlow(entryCode, authMode) {
  * 
  * @param {number} nowMs Current time milliseconds.
  * @param {number} epiresInS Expires in (seconds)
- * @returns 
+ * @returns {number}
  */
 function calculateExpiryDate(nowMs, epiresInS) {
     return nowMs + ((epiresInS-10)*1000)
@@ -246,7 +281,6 @@ function calculateExpiryDate(nowMs, epiresInS) {
  * @returns {Promise.<Object>} Promise which resolves the resolved authenticated account object.
  */
 exports.addMicrosoftAccount = async function(authCode) {
-
     const fullAuth = await fullMicrosoftAuthFlow(authCode, AUTH_MODE.FULL)
 
     // Advance expiry by 10 seconds to avoid close calls.
@@ -280,14 +314,13 @@ exports.removeMojangAccount = async function(uuid){
         if(response.responseStatus === RestResponseStatus.SUCCESS) {
             ConfigManager.removeAuthAccount(uuid)
             ConfigManager.save()
-            return Promise.resolve()
         } else {
             log.error('Error while removing account', response.error)
-            return Promise.reject(response.error)
+            throw response.error
         }
     } catch (err){
         log.error('Error while removing account', err)
-        return Promise.reject(err)
+        throw err
     }
 }
 
@@ -302,46 +335,63 @@ exports.removeMicrosoftAccount = async function(uuid){
     try {
         ConfigManager.removeAuthAccount(uuid)
         ConfigManager.save()
-        return Promise.resolve()
     } catch (err){
         log.error('Error while removing account', err)
-        return Promise.reject(err)
+        throw err
     }
 }
 
 /**
- * Validate the selected account with Mojang's authserver. If the account is not valid,
- * we will attempt to refresh the access token and update that value. If that fails, a
- * new login will be required.
+ * Validate the selected account against the NovaWorld authserver. If the token is not
+ * valid (expiré, révoqué, compte banni, etc.), the account is considered invalid and
+ * a new login will be required.
+ * 
+ * NOTE: adapte l'URL/le format de réponse ci-dessous en fonction de ce que ton API
+ * Azuriom expose réellement pour la vérification d'un token (ex: GET /api/auth/validate,
+ * ou GET /api/user avec le token en Authorization). Le principe reste le même : ne
+ * jamais se fier uniquement à la présence locale du token.
  * 
  * @returns {Promise.<boolean>} Promise which resolves to true if the access token is valid,
  * otherwise false.
  */
 async function validateSelectedMojangAccount(){
     const current = ConfigManager.getSelectedAccount()
-    const response = await MojangRestAPI.validate(current.accessToken, ConfigManager.getClientToken())
 
-    if(response.responseStatus === RestResponseStatus.SUCCESS) {
-        const isValid = response.data
-        if(!isValid){
-            const refreshResponse = await MojangRestAPI.refresh(current.accessToken, ConfigManager.getClientToken())
-            if(refreshResponse.responseStatus === RestResponseStatus.SUCCESS) {
-                const session = refreshResponse.data
-                ConfigManager.updateMojangAuthAccount(current.uuid, session.accessToken)
-                ConfigManager.save()
-            } else {
-                log.error('Error while validating selected profile:', refreshResponse.error)
-                log.info('Account access token is invalid.')
-                return false
-            }
-            log.info('Account access token validated.')
-            return true
-        } else {
-            log.info('Account access token validated.')
-            return true
-        }
+    if (!current || !current.accessToken) {
+        log.info('Aucune session locale trouvée.')
+        return false
     }
-    
+
+    try {
+        const response = await axios.get('https://novaworld-mc.fr/api/auth/validate', {
+            headers: {
+                'Authorization': `Bearer ${current.accessToken}`,
+                'Accept': 'application/json'
+            },
+            timeout: 8000 // 8s max : évite que le launcher reste bloqué si l'endpoint ne répond jamais
+        })
+
+        // Si le serveur nous répond que le token est invalide/expiré/banni
+        if (response.data && response.data.valid === false) {
+            log.info('Session NovaWorld invalide côté serveur.')
+            return false
+        }
+
+        log.info('Session NovaWorld validée avec succès.')
+        return true
+
+    } catch (err) {
+        // 401/403 = token invalide ou expiré -> on considère la session comme invalide
+        if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+            log.info('Session NovaWorld expirée ou invalide (statut ' + err.response.status + ').')
+            return false
+        }
+
+        // Toute autre erreur (réseau, serveur down, etc.) : on log mais on ne bloque
+        // pas nécessairement l'utilisateur pour une simple coupure réseau ponctuelle.
+        log.error('Impossible de valider la session NovaWorld.', err)
+        return false
+    }
 }
 
 /**
@@ -416,10 +466,15 @@ async function validateSelectedMicrosoftAccount(){
 exports.validateSelected = async function(){
     const current = ConfigManager.getSelectedAccount()
 
+    // Sécurité essentielle : éviter le crash si aucun compte n'est encore enregistré
+    if (!current) {
+        log.info('Aucun compte sélectionné.')
+        return false
+    }
+
     if(current.type === 'microsoft') {
         return await validateSelectedMicrosoftAccount()
     } else {
         return await validateSelectedMojangAccount()
     }
-    
 }
