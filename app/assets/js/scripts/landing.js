@@ -2,6 +2,8 @@
  * Script for landing.ejs
  */
 // Requirements
+const path                    = require('path')
+const ensureExtraMods         = require('./ensureExtraMods')
 const { URL }                 = require('url')
 const {
     MojangRestAPI,
@@ -554,6 +556,24 @@ async function dlAsync(login = true) {
     if(login) {
         const authUser = ConfigManager.getSelectedAccount()
         loggerLaunchSuite.info(`Sending selected account (${authUser.displayName}) to ProcessBuilder.`)
+
+        // --- Force-install IAV et VEB dans le vrai dossier mods avant de lancer ---
+        setLaunchDetails('Vérification des mods véhicules...')
+        try {
+            const instanceDir = path.join(ConfigManager.getInstanceDirectory(), serv.rawServer.id)
+            await ensureExtraMods(instanceDir, (modName, status) => {
+                loggerLaunchSuite.info(`${modName}: ${status}`)
+                if(status === 'downloading'){
+                    setLaunchDetails(`Téléchargement de ${modName}...`)
+                }
+            })
+        } catch(err) {
+            loggerLaunchSuite.error('Erreur lors de l\'installation des mods véhicules.', err)
+            showLaunchFailure('Erreur d\'installation', 'Impossible d\'installer IAV/VEB. Vérifiez votre connexion internet.')
+            return
+        }
+        // --- Fin de l'installation forcée ---
+
         let pb = new ProcessBuilder(serv, versionData, modLoaderData, authUser, remote.app.getVersion())
         setLaunchDetails(Lang.queryJS('landing.dlAsync.launchingGame'))
 
