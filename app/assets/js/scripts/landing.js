@@ -1,6 +1,3 @@
-/**
- * Script for landing.ejs
- */
 // Requirements
 const path                    = require('path')
 const ensureExtraMods         = require('./ensureExtraMods')
